@@ -1,0 +1,37 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Immersive Text-to-Speech Demo</title>
+    <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+    <div class="container">
+        <h1>Immersive Text-to-Speech</h1>
+        <textarea id="textInput" placeholder="Paste your text here..."></textarea>
+        <div class="controls">
+            <label for="voiceSelect">Choose Voice:</label>
+            <select id="voiceSelect">
+                <option value="default">Default</option>
+                <option value="male">Male Voice</option>
+                <option value="female">Female Voice</option>
+                <option value="narrator">Narrator</option>
+            </select>
+
+            <label for="moodSelect">Choose Mood:</label>
+            <select id="moodSelect">
+                <option value="neutral">Neutral</option>
+                <option value="suspense">Suspense</option>
+                <option value="happy">Happy</option>
+                <option value="sad">Sad</option>
+            </select>
+        </div>
+        <button id="playButton">Play</button>
+        <div id="output" class="hidden">
+            <p>Processing...</p>
+        </div>
+    </div>
+    <script src="scripts.js"></script>
+</body>
+</html>
