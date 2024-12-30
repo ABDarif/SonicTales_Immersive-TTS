@@ -2,7 +2,7 @@
 $servername = "localhost";
 $username = "root"; // Replace with your phpMyAdmin username
 $password = ""; // Replace with your phpMyAdmin password
-$dbname = "user_auth"; // Replace with your database name
+$dbname = "sonictales"; // Replace with your database name
 
 $conn = new mysqli($servername, $username, $password, $dbname);
 
