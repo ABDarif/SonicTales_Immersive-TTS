@@ -1,5 +1,12 @@
 <?php
+session_start();
 header('Content-Type: application/json');
+
+// Check if the user is logged in
+if (!isset($_SESSION['user_id'])) {
+    echo json_encode(['success' => false, 'error' => 'User not logged in.']);
+    exit;
+}
 
 // Database configuration
 $host = 'localhost';
@@ -24,9 +31,10 @@ if (!isset($data['text']) || trim($data['text']) === '') {
 }
 
 $text = $conn->real_escape_string($data['text']);
+$customer_id = $_SESSION['user_id']; // Get the logged-in user's ID
 
 // Insert the text into the database
-$query = "INSERT INTO text_history (text_content) VALUES ('$text')";
+$query = "INSERT INTO text_history (text_content, customer_id) VALUES ('$text', '$customer_id')";
 
 if ($conn->query($query) === TRUE) {
     echo json_encode(['success' => true]);

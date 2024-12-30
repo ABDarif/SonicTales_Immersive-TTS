@@ -1,4 +1,5 @@
 <?php
+session_start();
 header('Content-Type: application/json');
 
 // Database configuration
@@ -14,9 +15,10 @@ if ($conn->connect_error) {
     echo json_encode(['success' => false, 'error' => 'Database connection failed.']);
     exit;
 }
+$customer_id = $_SESSION['user_id'];
 
 // Fetch the text history from the database
-$query = "SELECT id, text_content FROM text_history ORDER BY created_at DESC";
+$query = "SELECT id, text_content FROM text_history WHERE customer_id = $customer_id ORDER BY created_at DESC";
 $result = $conn->query($query);
 
 $history = [];
