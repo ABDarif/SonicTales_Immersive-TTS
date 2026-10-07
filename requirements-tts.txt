@@ -1,0 +1,4 @@
+# Optional local neural TTS (best free voices; runs on CPU, ~350 MB download on first use).
+# Also needs espeak-ng for its phonemizer fallback:  apt install espeak-ng
+kokoro>=0.9
+soundfile

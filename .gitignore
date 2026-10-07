@@ -1,0 +1,19 @@
+# secrets
+.env
+
+# python
+__pycache__/
+*.pyc
+.venv/
+venv/
+.pytest_cache/
+.ruff_cache/
+
+# runtime data and generated audio
+data/
+output/
+.cache/
+*.wav
+*.mp3
+*.m4b
+!tests/fixtures/*.wav

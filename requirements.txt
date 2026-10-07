@@ -1,0 +1,11 @@
+# Core: PDF -> script -> audio -> web app
+numpy>=1.26
+pymupdf>=1.24
+pydantic>=2.6
+fastapi>=0.115
+uvicorn>=0.30
+python-multipart>=0.0.9
+httpx>=0.27
+
+# Optional: AI script analysis (speaker + scene detection with Claude)
+anthropic>=0.40

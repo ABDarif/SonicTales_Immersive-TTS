@@ -1,0 +1,107 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>SonicTales: Immersive Audiobooks</title>
+    <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='8' fill='%234f46e5'/%3E%3Cpath d='M6 16h3v0M10 11v10M15 7v18M20 11v10M25 14v4' stroke='white' stroke-width='2.4' stroke-linecap='round'/%3E%3C/svg%3E">
+    <link rel="stylesheet" href="styles.css">
+    <script src="scripts.js" defer></script>
+</head>
+<body>
+    <header class="topbar">
+        <h1>SonicTales <span class="tag">immersive audiobooks</span></h1>
+        <div id="account">
+            <span id="whoami" hidden></span>
+            <button id="loginBtn" class="ghost">Log in / Sign up</button>
+            <button id="logoutBtn" class="ghost" hidden>Log out</button>
+        </div>
+    </header>
+
+    <div class="layout">
+        <aside class="sidebar">
+            <h2>Your audiobooks</h2>
+            <p id="historyEmpty" class="muted">Log in to see your history.</p>
+            <ul id="historyList"></ul>
+        </aside>
+
+        <main>
+            <section class="card" id="createCard">
+                <h2>Create an audiobook</h2>
+                <p class="muted">Upload a book PDF (or paste text). SonicTales finds who is speaking, gives each
+                    character a voice, and adds background ambience that matches each scene.</p>
+
+                <div class="tabs" role="tablist">
+                    <button class="tab active" data-tab="file" role="tab">Upload file</button>
+                    <button class="tab" data-tab="text" role="tab">Paste text</button>
+                </div>
+                <div id="paneFile" class="pane">
+                    <input type="file" id="fileInput" accept=".pdf,.txt,application/pdf,text/plain">
+                </div>
+                <div id="paneText" class="pane" hidden>
+                    <textarea id="textInput" rows="8" placeholder="Paste a chapter or story here..."></textarea>
+                </div>
+
+                <div class="grid">
+                    <label>Title <input id="titleInput" maxlength="120" placeholder="optional"></label>
+                    <label>Chapters <input id="chaptersInput" placeholder="all, or e.g. 1,3,5-7"></label>
+                    <label>Voice engine
+                        <select id="ttsSelect"><option value="auto">Auto (best available)</option></select>
+                    </label>
+                    <label>Script analysis
+                        <select id="builderSelect">
+                            <option value="auto">Auto</option>
+                            <option value="heuristic">Offline rules</option>
+                            <option value="llm">AI (Claude)</option>
+                        </select>
+                    </label>
+                    <label>Format
+                        <select id="fmtSelect">
+                            <option value="mp3">MP3</option>
+                            <option value="m4b">M4B (audiobook, chapters)</option>
+                            <option value="wav">WAV</option>
+                        </select>
+                    </label>
+                    <label class="inline"><input type="checkbox" id="ambienceCheck" checked> Background ambience</label>
+                    <label class="wide">Ambience level <output id="ambienceOut">-12 dB</output>
+                        <input type="range" id="ambienceRange" min="-30" max="-3" step="1" value="-12">
+                    </label>
+                </div>
+                <p id="engineNote" class="notice" hidden></p>
+                <button id="createBtn" class="primary">Generate audiobook</button>
+                <p id="createError" class="error" role="alert" hidden></p>
+            </section>
+
+            <section class="card" id="jobCard" hidden>
+                <h2 id="jobTitle"></h2>
+                <progress id="jobProgress" max="100" value="0"></progress>
+                <p id="jobMessage" class="muted"></p>
+                <p id="jobError" class="error" hidden></p>
+                <div id="result" hidden>
+                    <audio id="player" controls preload="metadata"></audio>
+                    <p><a id="downloadLink" class="button" href="#">Download audiobook</a></p>
+                    <h3>Chapters</h3>
+                    <ul id="chapterList" class="chapters"></ul>
+                    <h3>Cast and scenes</h3>
+                    <div id="scriptView"></div>
+                </div>
+            </section>
+        </main>
+    </div>
+
+    <dialog id="authDialog">
+        <form id="authForm" method="dialog">
+            <h2 id="authTitle">Log in</h2>
+            <label>Username <input id="authUser" autocomplete="username" required minlength="3" maxlength="32"></label>
+            <label id="emailRow" hidden>Email <input id="authEmail" type="email" autocomplete="email" maxlength="120"></label>
+            <label>Password <input id="authPass" type="password" autocomplete="current-password" required minlength="8"></label>
+            <p id="authError" class="error" role="alert" hidden></p>
+            <div class="row">
+                <button type="submit" class="primary" id="authSubmit">Log in</button>
+                <button type="button" class="ghost" id="authSwitch">Need an account? Sign up</button>
+                <button type="button" class="ghost" id="authCancel">Cancel</button>
+            </div>
+        </form>
+    </dialog>
+</body>
+</html>

@@ -1,0 +1,12 @@
+.git
+.venv
+__pycache__
+.pytest_cache
+.ruff_cache
+data
+output
+tests
+.env
+*.wav
+*.mp3
+*.m4b
