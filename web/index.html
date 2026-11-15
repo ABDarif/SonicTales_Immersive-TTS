@@ -11,17 +11,13 @@
 <body>
     <header class="topbar">
         <h1>SonicTales <span class="tag">immersive audiobooks</span></h1>
-        <div id="account">
-            <span id="whoami" hidden></span>
-            <button id="loginBtn" class="ghost">Log in / Sign up</button>
-            <button id="logoutBtn" class="ghost" hidden>Log out</button>
-        </div>
     </header>
 
     <div class="layout">
         <aside class="sidebar">
             <h2>Your audiobooks</h2>
-            <p id="historyEmpty" class="muted">Log in to see your history.</p>
+            <p id="historyEmpty" class="muted">Nothing yet. Generate your first audiobook!</p>
+            <p class="muted small">Kept in this browser for a few days, then removed automatically.</p>
             <ul id="historyList"></ul>
         </aside>
 
@@ -89,19 +85,5 @@
         </main>
     </div>
 
-    <dialog id="authDialog">
-        <form id="authForm" method="dialog">
-            <h2 id="authTitle">Log in</h2>
-            <label>Username <input id="authUser" autocomplete="username" required minlength="3" maxlength="32"></label>
-            <label id="emailRow" hidden>Email <input id="authEmail" type="email" autocomplete="email" maxlength="120"></label>
-            <label>Password <input id="authPass" type="password" autocomplete="current-password" required minlength="8"></label>
-            <p id="authError" class="error" role="alert" hidden></p>
-            <div class="row">
-                <button type="submit" class="primary" id="authSubmit">Log in</button>
-                <button type="button" class="ghost" id="authSwitch">Need an account? Sign up</button>
-                <button type="button" class="ghost" id="authCancel">Cancel</button>
-            </div>
-        </form>
-    </dialog>
 </body>
 </html>

@@ -40,6 +40,7 @@ def settings(tmp_path: Path) -> Settings:
         data_dir=tmp_path / "data",
         max_chars=100_000,
         secure_cookies=False,
+        retention_days=7,
         llm_model="test-model",
         anthropic_api_key=None,
         openai_api_key=None,

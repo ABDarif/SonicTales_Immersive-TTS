@@ -42,9 +42,10 @@ python main.py script book.pdf                              # preview speakers/s
 
 ### Web app
 
-Sign up, upload a PDF (or paste text), choose options, and watch progress. The result page has a
+No account or login is needed: open the page, upload a PDF (or paste text), choose options, and watch progress. The result page has a
 player with per-chapter playback and download, plus the detected cast and each scene's ambience.
-History is kept per user. Interactive API docs live at `/api/docs`.
+Your history is private to your browser (an anonymous cookie, no personal data) and finished audiobooks are
+deleted after 7 days by default. Interactive API docs live at `/api/docs`.
 
 ## What each stage does
 
@@ -55,12 +56,13 @@ History is kept per user. Interactive API docs live at `/api/docs`.
 | Voices | `app/tts_engine.py` | One interface, four engines (Kokoro, OpenAI, espeak-ng, placeholder). Each character gets a stable voice from a gendered pool; results are cached on disk so reruns are free; transient failures are retried. |
 | Ambience | `app/ambience.py` | 11 procedural soundscapes (rain, thunder, wind, night, fire, ocean, forest, river, city, crowd, birds). Noise is shaped in the frequency domain with whole-cycle modulation so every loop is seamless. Drop real recordings in `assets/ambience/` to override. |
 | Mix | `app/mixer.py` | Pauses between lines, ambience bed ducked ~7 dB under speech, crossfades between scenes, then ffmpeg loudness normalisation (-16 LUFS). |
-| Serve | `app/server.py`, `app/db.py` | FastAPI + SQLite. Cookie sessions, scrypt password hashes, parameterised SQL, login throttling, per-user jobs, background worker, HTTP range requests so audio seeks. |
+| Serve | `app/server.py`, `app/db.py` | FastAPI + SQLite. No accounts: an anonymous cookie scopes each browser's jobs, with parameterised SQL, per-visitor and global job limits, automatic cleanup, a background worker, and HTTP range requests so audio seeks. |
 
 ## Configuration
 
 Copy `.env.example` to `.env`. All variables are optional: `SONICTALES_DATA`, `SONICTALES_MAX_CHARS`,
-`SONICTALES_SECURE_COOKIES` (set to `1` behind HTTPS), `ANTHROPIC_API_KEY` (+ `SONICTALES_LLM_MODEL`)
+`SONICTALES_SECURE_COOKIES` (set to `1` behind HTTPS), `SONICTALES_RETENTION_DAYS` (default 7, `0` keeps
+everything), `ANTHROPIC_API_KEY` (+ `SONICTALES_LLM_MODEL`)
 for the AI script builder, `OPENAI_API_KEY` for cloud voices.
 
 ## Development
@@ -81,10 +83,10 @@ See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for design decisions and trade-
 
 Be aware of what is and isn't verified:
 
-- **Tested automatically (128 tests, on Python 3.11 and 3.13):** PDF extraction, the rule-based script builder (including a
+- **Tested automatically (137 tests, on Python 3.11 and 3.13):** PDF extraction, the rule-based script builder (including a
   real-prose regression), the LLM builder against a fake client (malformed output, dropped text,
   network errors), all ambience generators (seamless loops, levels), mixing/ducking, MP3/M4B export
-  with chapter markers and loudness, the whole pipeline, and the web API (auth, isolation, uploads, jobs).
+  with chapter markers and loudness, the whole pipeline, and the web API (anonymous visitors, isolation, limits, retention, uploads, jobs).
   The web UI was also driven end to end in headless Chromium.
 - **Not built or run anywhere yet:** the `Dockerfile` (no Docker daemon was available when it was written).
 - **Not exercised in CI:** the Kokoro and espeak engines and the live Claude/OpenAI calls need

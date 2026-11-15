@@ -1,13 +1,12 @@
-"""SQLite persistence: users, login sessions and generation jobs.
+"""SQLite persistence for generation jobs.
 
-All SQL uses bound parameters (the old PHP version interpolated user input into queries).
+There are no accounts. Each browser gets a random private token in a cookie; only a hash of it is
+stored here (`owner`), so a leaked database cannot be used to open anyone's audiobooks.
+All SQL uses bound parameters.
 """
 
 from __future__ import annotations
 
-import hashlib
-import hmac
-import secrets
 import sqlite3
 import time
 from collections.abc import Iterator
@@ -15,21 +14,9 @@ from contextlib import contextmanager
 from pathlib import Path
 
 SCHEMA = """
-CREATE TABLE IF NOT EXISTS users (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    username TEXT NOT NULL UNIQUE COLLATE NOCASE,
-    email TEXT NOT NULL,
-    password_hash TEXT NOT NULL,
-    created_at REAL NOT NULL
-);
-CREATE TABLE IF NOT EXISTS sessions (
-    token_hash TEXT PRIMARY KEY,
-    user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-    expires_at REAL NOT NULL
-);
 CREATE TABLE IF NOT EXISTS jobs (
     id TEXT PRIMARY KEY,
-    user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    owner TEXT NOT NULL,             -- sha256 of the visitor's cookie token
     title TEXT NOT NULL,
     status TEXT NOT NULL,            -- queued | running | done | failed
     progress REAL NOT NULL DEFAULT 0,
@@ -42,35 +29,10 @@ CREATE TABLE IF NOT EXISTS jobs (
     created_at REAL NOT NULL,
     finished_at REAL
 );
-CREATE INDEX IF NOT EXISTS jobs_by_user ON jobs(user_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS jobs_by_owner ON jobs(owner, created_at DESC);
 """
 
-SESSION_TTL_S = 14 * 24 * 3600
-
-
-def hash_password(password: str, salt: bytes | None = None) -> str:
-    salt = salt or secrets.token_bytes(16)
-    digest = hashlib.scrypt(password.encode(), salt=salt, n=2**14, r=8, p=1, dklen=32)
-    return f"scrypt${salt.hex()}${digest.hex()}"
-
-
-def verify_password(password: str, stored: str) -> bool:
-    try:
-        scheme, salt_hex, digest_hex = stored.split("$")
-        if scheme != "scrypt":
-            return False
-        candidate = hash_password(password, bytes.fromhex(salt_hex)).split("$")[2]
-    except ValueError:
-        return False
-    return hmac.compare_digest(candidate, digest_hex)
-
-
-# Used to burn the same CPU time when a username doesn't exist (no user enumeration by timing).
-_DUMMY_HASH = hash_password("dummy-password-for-timing")
-
-
-def _token_hash(token: str) -> str:
-    return hashlib.sha256(token.encode()).hexdigest()
+ACTIVE = ("queued", "running")
 
 
 class Database:
@@ -80,6 +42,7 @@ class Database:
     def init(self) -> None:
         self.path.parent.mkdir(parents=True, exist_ok=True)
         with self.connect() as conn:
+            self._drop_legacy_account_tables(conn)
             conn.executescript(SCHEMA)
             conn.execute("PRAGMA journal_mode=WAL")
             # jobs that were running when the process died can never finish
@@ -89,77 +52,31 @@ class Database:
                 (time.time(),),
             )
 
+    @staticmethod
+    def _drop_legacy_account_tables(conn: sqlite3.Connection) -> None:
+        """Earlier versions had users/sessions and per-user jobs. Those histories belonged to
+        accounts that no longer exist and can't be opened by anyone, so start clean."""
+        cols = {r["name"] for r in conn.execute("PRAGMA table_info(jobs)")}
+        if "user_id" in cols:
+            conn.execute("DROP TABLE jobs")
+        conn.execute("DROP TABLE IF EXISTS sessions")
+        conn.execute("DROP TABLE IF EXISTS users")
+
     @contextmanager
     def connect(self) -> Iterator[sqlite3.Connection]:
         conn = sqlite3.connect(self.path, timeout=15)
         conn.row_factory = sqlite3.Row
-        conn.execute("PRAGMA foreign_keys=ON")
         try:
             with conn:  # commit / rollback
                 yield conn
         finally:
             conn.close()
 
-    # ---- users
-
-    def create_user(self, username: str, email: str, password: str) -> int | None:
-        """Returns the new user id, or None if the username is taken."""
-        try:
-            with self.connect() as conn:
-                cur = conn.execute(
-                    "INSERT INTO users (username, email, password_hash, created_at) VALUES (?,?,?,?)",
-                    (username, email, hash_password(password), time.time()),
-                )
-                return cur.lastrowid
-        except sqlite3.IntegrityError:
-            return None
-
-    def authenticate(self, username: str, password: str) -> int | None:
-        with self.connect() as conn:
-            row = conn.execute("SELECT id, password_hash FROM users WHERE username = ?", (username,)).fetchone()
-        if row is None:
-            verify_password(password, _DUMMY_HASH)
-            return None
-        return row["id"] if verify_password(password, row["password_hash"]) else None
-
-    def get_user(self, user_id: int) -> sqlite3.Row | None:
-        with self.connect() as conn:
-            return conn.execute("SELECT id, username, email FROM users WHERE id = ?", (user_id,)).fetchone()
-
-    # ---- sessions
-
-    def create_session(self, user_id: int) -> str:
-        token = secrets.token_urlsafe(32)
-        with self.connect() as conn:
-            conn.execute("DELETE FROM sessions WHERE expires_at < ?", (time.time(),))
-            conn.execute(
-                "INSERT INTO sessions (token_hash, user_id, expires_at) VALUES (?,?,?)",
-                (_token_hash(token), user_id, time.time() + SESSION_TTL_S),
-            )
-        return token
-
-    def user_for_session(self, token: str | None) -> sqlite3.Row | None:
-        if not token:
-            return None
-        with self.connect() as conn:
-            return conn.execute(
-                "SELECT u.id, u.username, u.email FROM sessions s JOIN users u ON u.id = s.user_id "
-                "WHERE s.token_hash = ? AND s.expires_at > ?",
-                (_token_hash(token), time.time()),
-            ).fetchone()
-
-    def delete_session(self, token: str | None) -> None:
-        if token:
-            with self.connect() as conn:
-                conn.execute("DELETE FROM sessions WHERE token_hash = ?", (_token_hash(token),))
-
-    # ---- jobs
-
-    def create_job(self, job_id: str, user_id: int, title: str, options_json: str, fmt: str) -> None:
+    def create_job(self, job_id: str, owner: str, title: str, options_json: str, fmt: str) -> None:
         with self.connect() as conn:
             conn.execute(
-                "INSERT INTO jobs (id, user_id, title, status, options, fmt, created_at) VALUES (?,?,?,?,?,?,?)",
-                (job_id, user_id, title, "queued", options_json, fmt, time.time()),
+                "INSERT INTO jobs (id, owner, title, status, options, fmt, created_at) VALUES (?,?,?,?,?,?,?)",
+                (job_id, owner, title, "queued", options_json, fmt, time.time()),
             )
 
     def update_job(self, job_id: str, **fields: object) -> None:
@@ -173,16 +90,40 @@ class Database:
                 [fields[c] for c in cols] + [job_id],
             )
 
-    def get_job(self, job_id: str, user_id: int) -> sqlite3.Row | None:
+    def get_job(self, job_id: str, owner: str) -> sqlite3.Row | None:
         with self.connect() as conn:
-            return conn.execute("SELECT * FROM jobs WHERE id = ? AND user_id = ?", (job_id, user_id)).fetchone()
+            return conn.execute("SELECT * FROM jobs WHERE id = ? AND owner = ?", (job_id, owner)).fetchone()
 
-    def list_jobs(self, user_id: int, limit: int = 100) -> list[sqlite3.Row]:
+    def list_jobs(self, owner: str, limit: int = 100) -> list[sqlite3.Row]:
         with self.connect() as conn:
             return conn.execute(
-                "SELECT * FROM jobs WHERE user_id = ? ORDER BY created_at DESC LIMIT ?", (user_id, limit)
+                "SELECT * FROM jobs WHERE owner = ? ORDER BY created_at DESC LIMIT ?", (owner, limit)
             ).fetchall()
 
-    def delete_job(self, job_id: str, user_id: int) -> bool:
+    def delete_job(self, job_id: str, owner: str) -> bool:
         with self.connect() as conn:
-            return conn.execute("DELETE FROM jobs WHERE id = ? AND user_id = ?", (job_id, user_id)).rowcount > 0
+            return conn.execute("DELETE FROM jobs WHERE id = ? AND owner = ?", (job_id, owner)).rowcount > 0
+
+    def count_active(self, owner: str | None = None) -> int:
+        marks = ",".join("?" * len(ACTIVE))
+        sql, args = f"SELECT COUNT(*) FROM jobs WHERE status IN ({marks})", list(ACTIVE)
+        if owner is not None:
+            sql, args = sql + " AND owner = ?", args + [owner]
+        with self.connect() as conn:
+            return conn.execute(sql, args).fetchone()[0]
+
+    def all_job_ids(self) -> set[str]:
+        with self.connect() as conn:
+            return {r["id"] for r in conn.execute("SELECT id FROM jobs")}
+
+    def delete_finished_before(self, cutoff: float) -> list[str]:
+        """Remove finished jobs created before `cutoff`; returns their ids so files can be deleted too."""
+        with self.connect() as conn:
+            ids = [
+                r["id"]
+                for r in conn.execute(
+                    "SELECT id FROM jobs WHERE created_at < ? AND status NOT IN ('queued','running')", (cutoff,)
+                )
+            ]
+            conn.executemany("DELETE FROM jobs WHERE id = ?", [(i,) for i in ids])
+        return ids

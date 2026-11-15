@@ -41,15 +41,23 @@ second-long kernels was O(n·k) and dominated runtime until profiled.
 latency predictable. Jobs interrupted by a restart are marked failed on startup instead of hanging forever.
 When this needs to scale, swap the executor for a real queue (RQ/Celery) without touching the pipeline.
 
-**Security posture.** scrypt password hashing with per-user salt; constant-ish-time login for unknown users;
-hashed session tokens in the DB; HttpOnly + SameSite=Lax cookies; Origin check on unsafe methods;
-CSP (no inline script/style), nosniff, frame-deny; per-user job isolation (404 not 403 to avoid leaking
-existence); upload size/type/magic-byte checks; server-generated job IDs, never user paths; login throttle.
+**No accounts.** Anyone can use the app without signing up. A random token in an HttpOnly cookie identifies a
+browser, and only its sha256 is stored, so a leaked database can't be used to open anyone's audiobooks. The
+trade-off is that history lives with the browser: clearing cookies or switching devices loses it. Without
+accounts there is nothing to rate-limit by user, so abuse is contained structurally instead: at most 2 active jobs
+per browser, 20 server-wide, upload size/type limits, and finished audiobooks are deleted after
+`SONICTALES_RETENTION_DAYS` (default 7) so anonymous uploads don't accumulate forever. Data directories from the earlier
+account-based version are migrated on startup: the old tables and their now-unreachable files are removed.
+
+**Security posture.** Per-visitor job isolation (404 not 403, so job IDs can't be probed); HttpOnly + SameSite=Lax
+cookies; Origin check on unsafe methods; CSP (no inline script/style), nosniff, frame-deny; upload size/type/magic-byte
+checks; server-generated job IDs, never user paths; parameterised SQL. For a public deployment also put it behind
+HTTPS (`SONICTALES_SECURE_COOKIES=1`) and a reverse proxy with request-rate limiting.
 
 ## Known gaps / next steps
 
 - OCR for scanned PDFs (`ocrmypdf`/Tesseract before extraction).
 - Voice cloning or user-chosen voices per character in the UI (the script already stores a voice per character).
 - Smarter coreference (pronouns across paragraphs) via a small local NLP model.
-- Persistent queue + object storage for multi-user deployment; per-user quotas.
+- Persistent queue + object storage for multi-user deployment; a durable queue would also allow fairer scheduling between visitors.
 - Alembic-style migrations once the schema changes.

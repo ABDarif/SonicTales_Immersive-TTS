@@ -29,6 +29,7 @@ class Settings:
     data_dir: Path
     max_chars: int
     secure_cookies: bool
+    retention_days: int
     llm_model: str
     anthropic_api_key: str | None
     openai_api_key: str | None
@@ -44,6 +45,7 @@ def get_settings() -> Settings:
         data_dir=Path(os.environ.get("SONICTALES_DATA", ROOT / "data")),
         max_chars=int(os.environ.get("SONICTALES_MAX_CHARS", "300000")),
         secure_cookies=os.environ.get("SONICTALES_SECURE_COOKIES", "0") == "1",
+        retention_days=int(os.environ.get("SONICTALES_RETENTION_DAYS", "7")),
         llm_model=os.environ.get("SONICTALES_LLM_MODEL", "claude-sonnet-5-5"),
         anthropic_api_key=os.environ.get("ANTHROPIC_API_KEY") or None,
         openai_api_key=os.environ.get("OPENAI_API_KEY") or None,

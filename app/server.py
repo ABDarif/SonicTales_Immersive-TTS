@@ -2,19 +2,19 @@
 
     uvicorn app.server:app          (or: python main.py serve)
 
-Auth is a cookie session; every job belongs to one user and is only visible to them.
+There are no accounts: each browser gets an anonymous random token in a cookie and only sees its own jobs.
 """
 
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 import re
+import secrets
 import shutil
-import threading
 import time
 import uuid
-from collections import defaultdict, deque
 from collections.abc import AsyncIterator
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import asynccontextmanager
@@ -25,7 +25,6 @@ from fastapi import Depends, FastAPI, File, Form, HTTPException, Request, Respon
 from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel, Field
 
 from app.config import ROOT, Settings, get_settings
 from app.db import Database
@@ -36,47 +35,13 @@ from app.tts_engine import available_engines
 log = logging.getLogger(__name__)
 
 MAX_UPLOAD_BYTES = 25 * 1024 * 1024
-SESSION_COOKIE = "session"
-USERNAME_RE = re.compile(r"^[A-Za-z0-9_.-]{3,32}$")
-EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
+VISITOR_COOKIE = "visitor"
+VISITOR_TOKEN_RE = re.compile(r"^[A-Za-z0-9_-]{20,64}$")
+VISITOR_COOKIE_MAX_AGE = 365 * 24 * 3600
+MAX_ACTIVE_PER_VISITOR = 2  # queued + running jobs one browser may have at once
+MAX_ACTIVE_TOTAL = 20  # whole-server cap so an open service can't be flooded
 MEDIA_TYPES = {"mp3": "audio/mpeg", "m4b": "audio/mp4", "wav": "audio/wav"}
 WEB_DIR = ROOT / "web"
-
-
-class Credentials(BaseModel):
-    username: str = Field(min_length=3, max_length=32)
-    password: str = Field(min_length=8, max_length=200)
-
-
-class SignupBody(Credentials):
-    email: str = Field(max_length=120)
-
-
-class LoginThrottle:
-    """Blocks brute force: N failed logins per (client, username) within a window."""
-
-    def __init__(self, limit: int = 8, window_s: float = 600.0) -> None:
-        self.limit, self.window = limit, window_s
-        self._fails: dict[tuple[str, str], deque[float]] = defaultdict(deque)
-        self._lock = threading.Lock()
-
-    def _prune(self, key: tuple[str, str]) -> deque[float]:
-        q = self._fails[key]
-        while q and q[0] < time.monotonic() - self.window:
-            q.popleft()
-        return q
-
-    def blocked(self, key: tuple[str, str]) -> bool:
-        with self._lock:
-            return len(self._prune(key)) >= self.limit
-
-    def record_failure(self, key: tuple[str, str]) -> None:
-        with self._lock:
-            self._prune(key).append(time.monotonic())
-
-    def reset(self, key: tuple[str, str]) -> None:
-        with self._lock:
-            self._fails.pop(key, None)
 
 
 def parse_chapter_spec(spec: str | None) -> list[int] | None:
@@ -103,13 +68,27 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     db = Database(settings.data_dir / "sonictales.db")
     jobs_dir = settings.data_dir / "jobs"
     executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="render")  # TTS is CPU-bound
-    throttle = LoginThrottle()
+
+    def remove_orphan_folders() -> None:
+        """Delete job folders with no DB row (legacy accounts, crashes between mkdir and insert)."""
+        known = db.all_job_ids()
+        for d in jobs_dir.iterdir():
+            if d.is_dir() and d.name not in known:
+                shutil.rmtree(d, ignore_errors=True)
+
+    def purge_expired() -> None:
+        """Anonymous audiobooks are not kept forever: delete finished jobs older than the retention window."""
+        if settings.retention_days > 0:
+            for job_id in db.delete_finished_before(time.time() - settings.retention_days * 86400):
+                shutil.rmtree(jobs_dir / job_id, ignore_errors=True)
 
     @asynccontextmanager
     async def lifespan(_: FastAPI) -> AsyncIterator[None]:
         settings.data_dir.mkdir(parents=True, exist_ok=True)
         jobs_dir.mkdir(parents=True, exist_ok=True)
         db.init()
+        remove_orphan_folders()
+        purge_expired()
         yield
         executor.shutdown(wait=False, cancel_futures=True)
 
@@ -136,62 +115,26 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             )
         return response
 
-    # ------------------------------------------------------------------ auth
+    # ------------------------------------------------------------------ anonymous visitors
 
-    def current_user(request: Request):
-        user = db.user_for_session(request.cookies.get(SESSION_COOKIE))
-        if user is None:
-            raise HTTPException(401, "Please log in")
-        return user
+    def visitor(request: Request, response: Response) -> str:
+        """Identify this browser without any login: a random private token in a cookie.
 
-    def set_session(response: Response, user_id: int) -> None:
-        response.set_cookie(
-            SESSION_COOKIE,
-            db.create_session(user_id),
-            max_age=14 * 24 * 3600,
-            httponly=True,
-            samesite="lax",
-            secure=settings.secure_cookies,
-            path="/",
-        )
-
-    @app.post("/api/signup", status_code=201)
-    def signup(body: SignupBody, response: Response):
-        username = body.username.strip()
-        if not USERNAME_RE.match(username):
-            raise HTTPException(422, "Username must be 3-32 characters: letters, digits, _ . -")
-        if not EMAIL_RE.match(body.email.strip()):
-            raise HTTPException(422, "Enter a valid email address")
-        user_id = db.create_user(username, body.email.strip(), body.password)
-        if user_id is None:
-            raise HTTPException(409, "That username is taken")
-        set_session(response, user_id)
-        return {"id": user_id, "username": username}
-
-    @app.post("/api/login")
-    def login(body: Credentials, request: Request, response: Response):
-        key = (request.client.host if request.client else "?", body.username.lower())
-        if throttle.blocked(key):
-            raise HTTPException(429, "Too many failed attempts; try again in a few minutes")
-        user_id = db.authenticate(body.username.strip(), body.password)
-        if user_id is None:
-            throttle.record_failure(key)
-            raise HTTPException(401, "Invalid username or password")
-        throttle.reset(key)
-        set_session(response, user_id)
-        return {"id": user_id, "username": body.username.strip()}
-
-    @app.post("/api/logout")
-    def logout(request: Request, response: Response):
-        db.delete_session(request.cookies.get(SESSION_COOKIE))
-        response.delete_cookie(SESSION_COOKIE, path="/")
-        return {"ok": True}
-
-    @app.get("/api/me")
-    def me(request: Request):
-        """Who am I? 200 with `user: null` when logged out, so a fresh page load isn't a console error."""
-        user = db.user_for_session(request.cookies.get(SESSION_COOKIE))
-        return {"user": {"id": user["id"], "username": user["username"]} if user else None}
+        Returns the sha256 of the token (what we store), and issues a fresh cookie if there is none.
+        """
+        token = request.cookies.get(VISITOR_COOKIE)
+        if not token or not VISITOR_TOKEN_RE.fullmatch(token):
+            token = secrets.token_urlsafe(24)
+            response.set_cookie(
+                VISITOR_COOKIE,
+                token,
+                max_age=VISITOR_COOKIE_MAX_AGE,
+                httponly=True,
+                samesite="lax",
+                secure=settings.secure_cookies,
+                path="/",
+            )
+        return hashlib.sha256(token.encode()).hexdigest()
 
     @app.get("/api/engines")
     def engines():
@@ -265,7 +208,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         ambience_db: float = Form(default=-12.0),
         fmt: str = Form(default="mp3"),
         chapters: str = Form(default=""),
-        user=Depends(current_user),
+        owner: str = Depends(visitor),
     ):
         if tts not in {"auto", "kokoro", "openai", "espeak", "synthetic"}:
             raise HTTPException(422, "Unknown TTS engine")
@@ -283,6 +226,12 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             chapter_list = parse_chapter_spec(chapters)
         except ValueError as exc:
             raise HTTPException(422, str(exc)) from exc
+
+        if db.count_active(owner) >= MAX_ACTIVE_PER_VISITOR:
+            raise HTTPException(429, "You already have audiobooks being generated; wait for one to finish")
+        if db.count_active() >= MAX_ACTIVE_TOTAL:
+            raise HTTPException(429, "The server is busy right now; please try again in a few minutes")
+        purge_expired()
 
         job_id = uuid.uuid4().hex
         folder = job_dir(job_id)
@@ -333,37 +282,37 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             chapters=chapter_list,
             max_chars=settings.max_chars,
         )
-        db.create_job(job_id, user["id"], book.title, json.dumps({"tts": tts, "builder": builder}), fmt)
+        db.create_job(job_id, owner, book.title, json.dumps({"tts": tts, "builder": builder}), fmt)
         executor.submit(run_job, job_id, source, opts)
         return {"id": job_id}
 
     @app.get("/api/jobs")
-    def list_jobs(user=Depends(current_user)):
-        return [job_json(r) for r in db.list_jobs(user["id"])]
+    def list_jobs(owner: str = Depends(visitor)):
+        return [job_json(r) for r in db.list_jobs(owner)]
 
-    def owned_job(job_id: str, user):
+    def owned_job(job_id: str, owner: str):
         if not re.fullmatch(r"[0-9a-f]{32}", job_id):
             raise HTTPException(404, "Not found")
-        row = db.get_job(job_id, user["id"])
+        row = db.get_job(job_id, owner)
         if row is None:
             raise HTTPException(404, "Not found")
         return row
 
     @app.get("/api/jobs/{job_id}")
-    def get_job(job_id: str, user=Depends(current_user)):
-        return job_json(owned_job(job_id, user))
+    def get_job(job_id: str, owner: str = Depends(visitor)):
+        return job_json(owned_job(job_id, owner))
 
     @app.get("/api/jobs/{job_id}/script")
-    def get_script(job_id: str, user=Depends(current_user)):
-        owned_job(job_id, user)
+    def get_script(job_id: str, owner: str = Depends(visitor)):
+        owned_job(job_id, owner)
         path = job_dir(job_id) / "script.json"
         if not path.is_file():
             raise HTTPException(404, "Script is not ready yet")
         return JSONResponse(json.loads(path.read_text(encoding="utf-8")))
 
     @app.get("/api/jobs/{job_id}/audio")
-    def get_audio(job_id: str, chapter: int | None = None, download: bool = False, user=Depends(current_user)):
-        row = owned_job(job_id, user)
+    def get_audio(job_id: str, chapter: int | None = None, download: bool = False, owner: str = Depends(visitor)):
+        row = owned_job(job_id, owner)
         if row["status"] != "done":
             raise HTTPException(409, "Audio is not ready yet")
         name = f"chapter_{chapter:03d}.{row['fmt']}" if chapter else f"audiobook.{row['fmt']}"
@@ -378,11 +327,11 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         )
 
     @app.delete("/api/jobs/{job_id}")
-    def delete_job(job_id: str, user=Depends(current_user)):
-        row = owned_job(job_id, user)
+    def delete_job(job_id: str, owner: str = Depends(visitor)):
+        row = owned_job(job_id, owner)
         if row["status"] in {"queued", "running"}:
             raise HTTPException(409, "Wait for the job to finish before deleting it")
-        db.delete_job(job_id, user["id"])
+        db.delete_job(job_id, owner)
         shutil.rmtree(job_dir(job_id), ignore_errors=True)
         return {"ok": True}
 

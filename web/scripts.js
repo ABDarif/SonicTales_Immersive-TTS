@@ -1,7 +1,7 @@
 "use strict";
 
 const $ = (id) => document.getElementById(id);
-const state = { user: null, activeJob: null, pollTimer: null, authMode: "login", tab: "file", engines: null };
+const state = { activeJob: null, pollTimer: null, tab: "file", engines: null };
 
 // ---------------------------------------------------------------- helpers
 
@@ -28,69 +28,12 @@ function fmtDuration(seconds) {
     return `${m}:${String(s).padStart(2, "0")}`;
 }
 
-// ---------------------------------------------------------------- auth
-
-function renderAccount() {
-    const loggedIn = Boolean(state.user);
-    show($("whoami"), loggedIn);
-    $("whoami").textContent = loggedIn ? state.user.username : "";
-    show($("loginBtn"), !loggedIn);
-    show($("logoutBtn"), loggedIn);
-    show($("historyEmpty"), !loggedIn);
-    if (!loggedIn) $("historyList").replaceChildren();
-}
-
-function setAuthMode(mode) {
-    state.authMode = mode;
-    const signup = mode === "signup";
-    $("authTitle").textContent = signup ? "Create account" : "Log in";
-    $("authSubmit").textContent = signup ? "Sign up" : "Log in";
-    $("authSwitch").textContent = signup ? "Have an account? Log in" : "Need an account? Sign up";
-    $("authPass").autocomplete = signup ? "new-password" : "current-password";
-    show($("emailRow"), signup);
-    $("authEmail").required = signup;
-    setError($("authError"), "");
-}
-
-function openAuth(mode = "login") {
-    setAuthMode(mode);
-    $("authDialog").showModal();
-}
-
-async function submitAuth(event) {
-    event.preventDefault();
-    const signup = state.authMode === "signup";
-    const body = { username: $("authUser").value.trim(), password: $("authPass").value };
-    if (signup) body.email = $("authEmail").value.trim();
-    try {
-        state.user = await api(signup ? "/api/signup" : "/api/login", {
-            method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body),
-        });
-        $("authPass").value = "";
-        $("authDialog").close();
-        renderAccount();
-        await loadHistory();
-    } catch (err) {
-        setError($("authError"), err.message);
-    }
-}
-
-async function logout() {
-    await api("/api/logout", { method: "POST" }).catch(() => {});
-    state.user = null;
-    stopPolling();
-    show($("jobCard"), false);
-    renderAccount();
-}
-
 // ---------------------------------------------------------------- history
 
 async function loadHistory() {
-    if (!state.user) return;
     const jobs = await api("/api/jobs");
     const list = $("historyList");
     list.replaceChildren();
-    $("historyEmpty").textContent = jobs.length ? "" : "Nothing yet. Generate your first audiobook!";
     show($("historyEmpty"), jobs.length === 0);
     for (const job of jobs) {
         const li = document.createElement("li");
@@ -160,7 +103,6 @@ async function loadEngines() {
 
 async function createJob() {
     setError($("createError"), "");
-    if (!state.user) { openAuth("login"); return; }
     const form = new FormData();
     if (state.tab === "file") {
         const file = $("fileInput").files[0];
@@ -185,7 +127,6 @@ async function createJob() {
         await loadHistory();
         openJob(id);
     } catch (err) {
-        if (err.status === 401) openAuth("login");
         setError($("createError"), err.message);
     } finally {
         $("createBtn").disabled = false;
@@ -276,22 +217,12 @@ function renderScript(script) {
 
 // ---------------------------------------------------------------- wiring
 
-window.addEventListener("DOMContentLoaded", async () => {
-    $("loginBtn").addEventListener("click", () => openAuth("login"));
-    $("logoutBtn").addEventListener("click", logout);
-    $("authForm").addEventListener("submit", submitAuth);
-    $("authSwitch").addEventListener("click", () => setAuthMode(state.authMode === "login" ? "signup" : "login"));
-    $("authCancel").addEventListener("click", () => $("authDialog").close());
+window.addEventListener("DOMContentLoaded", () => {
     document.querySelectorAll(".tab").forEach((b) => b.addEventListener("click", () => setTab(b.dataset.tab)));
     $("ambienceRange").addEventListener("input", () => { $("ambienceOut").textContent = `${$("ambienceRange").value} dB`; });
     $("ambienceCheck").addEventListener("change", () => { $("ambienceRange").disabled = !$("ambienceCheck").checked; });
     $("createBtn").addEventListener("click", createJob);
 
-    renderAccount();
     loadEngines();
-    try {
-        state.user = (await api("/api/me")).user;
-        renderAccount();
-        await loadHistory();
-    } catch (_) { /* server unreachable: stay logged out */ }
+    loadHistory().catch(() => { /* server unreachable: leave the history empty */ });
 });
