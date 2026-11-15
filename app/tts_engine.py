@@ -5,16 +5,23 @@ backend produced the speech:
 
     kokoro    local neural TTS (pip install kokoro soundfile; best free quality, CPU ok)
     openai    cloud TTS (needs OPENAI_API_KEY)
+    sapi      Windows' built-in voices (David, Zira, ...): real speech with nothing to install
     espeak    espeak-ng command line (robotic, but works anywhere it is installed)
     synthetic offline stand-in that is NOT speech; used for tests, CI and dry runs
 """
 
 from __future__ import annotations
 
+import base64
+import contextlib
 import hashlib
+import json
 import logging
+import os
 import shutil
 import subprocess
+import sys
+import tempfile
 from abc import ABC, abstractmethod
 from pathlib import Path
 
@@ -142,6 +149,116 @@ class EspeakEngine(TTSEngine):
             raise TTSError(f"espeak failed: {proc.stderr.decode(errors='replace')[:200]}")
         audio, sr = read_wav_bytes(proc.stdout)
         return resample(audio, sr, self.sample_rate)
+
+
+# --------------------------------------------------------------------------- windows (SAPI)
+
+_SAPI_LIST_VOICES = r"""
+Add-Type -AssemblyName System.Speech
+$s = New-Object System.Speech.Synthesis.SpeechSynthesizer
+$s.GetInstalledVoices() | Where-Object { $_.Enabled } | ForEach-Object { $_.VoiceInfo } |
+    Select-Object Name, @{n='Gender';e={$_.Gender.ToString()}}, @{n='Culture';e={$_.Culture.Name}} |
+    ConvertTo-Json -Compress
+$s.Dispose()
+"""
+# Text, voice, rate and output path travel in environment variables, so no quoting or encoding
+# problem can ever come from the book's text.
+_SAPI_SPEAK = r"""
+$ErrorActionPreference = 'Stop'
+Add-Type -AssemblyName System.Speech
+$s = New-Object System.Speech.Synthesis.SpeechSynthesizer
+try {
+    $s.SelectVoice($env:SONICTALES_VOICE)
+    $s.Rate = [int]$env:SONICTALES_RATE
+    $s.SetOutputToWaveFile($env:SONICTALES_OUT)
+    $s.Speak($env:SONICTALES_TEXT)
+} finally { $s.Dispose() }
+"""
+
+
+class SapiEngine(TTSEngine):
+    """Windows' built-in text-to-speech via PowerShell (System.Speech). Needs no install on Windows 10/11.
+
+    Quality is clearly better than espeak but below neural voices such as Kokoro. Each line starts a
+    short PowerShell process, so it is slower per line than the other engines (results are cached).
+    """
+
+    name = "sapi"
+    sample_rate = 22050
+
+    def __init__(self, runner=None) -> None:
+        if runner is None:
+            if sys.platform != "win32":
+                raise TTSError("the sapi engine only works on Windows")
+            self.exe = shutil.which("powershell") or shutil.which("pwsh")
+            if not self.exe:
+                raise TTSError("PowerShell was not found")
+        else:  # tests inject a fake runner
+            self.exe = "powershell"
+        self._run = runner or subprocess.run
+        self.voices = self._discover_voices()
+
+    def _powershell(self, script: str, env: dict[str, str] | None = None) -> subprocess.CompletedProcess:
+        encoded = base64.b64encode(script.encode("utf-16-le")).decode()
+        return self._run(
+            [self.exe, "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-EncodedCommand", encoded],
+            capture_output=True,
+            check=False,
+            timeout=120,
+            env={**os.environ, **(env or {})},
+        )
+
+    def _discover_voices(self) -> dict[str, list[str]]:
+        proc = self._powershell(_SAPI_LIST_VOICES)
+        if proc.returncode != 0:
+            raise TTSError(f"could not list Windows voices: {proc.stderr.decode(errors='replace')[:200]}")
+        try:
+            data = json.loads(proc.stdout.decode("utf-8", errors="replace").strip() or "[]")
+        except ValueError as exc:
+            raise TTSError("could not read the list of Windows voices") from exc
+        voices = [data] if isinstance(data, dict) else data
+        english = [v for v in voices if str(v.get("Culture", "")).lower().startswith("en")]
+        voices = english or voices
+        if not voices:
+            raise TTSError("Windows has no text-to-speech voices installed (Settings > Time & language > Speech)")
+        male = [v["Name"] for v in voices if v.get("Gender") == "Male"]
+        female = [v["Name"] for v in voices if v.get("Gender") == "Female"]
+        everyone = [v["Name"] for v in voices]
+        # If the machine only has voices of one gender, reuse them for the other role rather than fail.
+        return {
+            "narrator": (male or everyone)[:1],
+            "male": male or everyone,
+            "female": female or everyone,
+        }
+
+    def synthesize(self, text: str, voice: str, emotion: str = "neutral") -> np.ndarray:
+        speed = EMOTION_PROFILE.get(emotion, EMOTION_PROFILE["neutral"])["speed"]
+        rate = max(-10, min(10, round((speed - 1.0) * 20)))  # SAPI rate is an integer from -10 to 10
+        fd, out = tempfile.mkstemp(suffix=".wav")
+        os.close(fd)
+        try:
+            proc = self._powershell(
+                _SAPI_SPEAK,
+                {
+                    "SONICTALES_TEXT": text,
+                    "SONICTALES_VOICE": voice,
+                    "SONICTALES_RATE": str(rate),
+                    "SONICTALES_OUT": out,
+                },
+            )
+            if proc.returncode != 0:
+                raise TTSError(f"Windows speech failed: {proc.stderr.decode(errors='replace')[:200]}")
+            with open(out, "rb") as fh:
+                audio, sr = read_wav_bytes(fh.read())
+        except (OSError, AudioError) as exc:
+            raise TTSError(f"Windows speech produced no audio: {exc}") from exc
+        finally:
+            with contextlib.suppress(OSError):
+                os.unlink(out)
+        return resample(audio, sr, self.sample_rate)
+
+    def cache_key(self) -> str:
+        return self.name
 
 
 # --------------------------------------------------------------------------- kokoro
@@ -286,20 +403,38 @@ def cast_voices(script: Script, engine: TTSEngine) -> dict[str, str]:
     return assignments
 
 
+NO_SPEECH_ENGINE_HELP = (
+    "No speech engine is available, so no voice can be generated. Install one of:\n"
+    "  - Windows: nothing to install; the built-in voices are used automatically (the sapi engine)\n"
+    "  - espeak-ng (any OS): https://github.com/espeak-ng/espeak-ng/releases\n"
+    "  - Kokoro neural voices: pip install -r requirements-tts.txt\n"
+    "  - OpenAI voices: set OPENAI_API_KEY\n"
+    "To hear only the mixing and ambience, choose the 'synthetic' engine explicitly (it makes tones, not speech)."
+)
+REAL_ENGINES = ("kokoro", "sapi", "espeak", "openai")
+
+
 def get_engine(name: str, settings: Settings | None = None, cache: bool = True) -> TTSEngine:
-    """name: auto | kokoro | openai | espeak | synthetic."""
+    """name: auto | kokoro | sapi | openai | espeak | synthetic.
+
+    `auto` picks the best real speech engine and never falls back to the non-speech `synthetic` one:
+    an audiobook without a voice is a failure the user should hear about, not a silent default.
+    """
     name = name.lower()
     engine: TTSEngine
     if name == "auto":
-        for candidate in ("kokoro", "espeak"):
+        for candidate in ("kokoro", "sapi", "espeak"):
             try:
                 return get_engine(candidate, settings, cache)
             except TTSError:
                 continue
-        log.warning("No real TTS engine available; falling back to the non-speech synthetic engine")
-        return get_engine("synthetic", settings, cache)
+        if settings and settings.openai_api_key:
+            return get_engine("openai", settings, cache)
+        raise TTSError(NO_SPEECH_ENGINE_HELP)
     if name == "kokoro":
         engine = KokoroEngine()
+    elif name == "sapi":
+        engine = SapiEngine()
     elif name == "openai":
         engine = OpenAIEngine(settings.openai_api_key if settings else None)
     elif name == "espeak":
@@ -316,7 +451,7 @@ def get_engine(name: str, settings: Settings | None = None, cache: bool = True) 
 def available_engines(settings: Settings | None = None) -> dict[str, bool]:
     """Which engines can be constructed right now (for the UI dropdown)."""
     result = {}
-    for n in ("kokoro", "openai", "espeak", "synthetic"):
+    for n in ("kokoro", "sapi", "openai", "espeak", "synthetic"):
         try:
             get_engine(n, settings, cache=False)
             result[n] = True

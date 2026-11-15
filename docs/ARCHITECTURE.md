@@ -29,8 +29,9 @@ chunk silently falls back to the rules. The model can never drop or invent story
 deterministic output, and loops are seamless by construction (periodic FFT synthesis). The trade-off is
 realism; `assets/ambience/` lets users substitute real recordings per tag.
 
-**Pluggable TTS behind a four-method-sized interface.** Kokoro (free, CPU-friendly), OpenAI (cloud),
-espeak-ng (anywhere), and a synthetic non-speech engine so tests and CI never download models.
+**Pluggable TTS behind a four-method-sized interface.** Kokoro (free, CPU-friendly), Windows SAPI (built in, zero install), OpenAI (cloud),
+espeak-ng (anywhere), and a synthetic non-speech engine so tests and CI never download models. `auto` never
+selects the synthetic engine: an audiobook with no voice is an error to report, not a default to hide.
 The cache key includes engine, voice, emotion and text.
 
 **No pydub.** It depends on `audioop`, removed in Python 3.13. numpy for DSP and direct ffmpeg calls for

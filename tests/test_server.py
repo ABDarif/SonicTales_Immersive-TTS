@@ -287,6 +287,17 @@ def test_bad_job_requests(client, form, status):
     assert not any(jobs_dir(client).iterdir()), "rejected requests leave nothing behind"
 
 
+def test_auto_without_a_speech_engine_fails_clearly_instead_of_making_tones(client, monkeypatch):
+    monkeypatch.setattr(
+        "app.server.available_engines",
+        lambda settings=None: {"kokoro": False, "sapi": False, "openai": False, "espeak": False, "synthetic": True},
+    )
+    r = submit(client, text="A short story.", tts="auto")
+    assert r.status_code == 422 and "No speech engine is available" in r.json()["detail"]
+    assert not any(jobs_dir(client).iterdir())
+    assert submit(client, text="A short story.", tts="synthetic").status_code == 202, "explicit demo mode still works"
+
+
 def test_upload_validation(client):
     assert submit(client, files={"file": ("a.exe", b"MZ", "application/octet-stream")}).status_code == 422
     assert submit(client, files={"file": ("a.pdf", b"not really a pdf", "application/pdf")}).status_code == 422

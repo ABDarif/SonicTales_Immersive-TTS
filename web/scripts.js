@@ -83,15 +83,15 @@ async function loadEngines() {
     for (const [name, ok] of Object.entries(state.engines.engines)) {
         const opt = document.createElement("option");
         opt.value = name;
-        opt.textContent = ok ? name : `${name} (not available)`;
+        opt.textContent = !ok ? `${name} (not available)` : name === "synthetic" ? "synthetic (placeholder tones, not speech)" : name;
         opt.disabled = !ok;
         select.append(opt);
     }
-    const real = ["kokoro", "openai", "espeak"].some((n) => state.engines.engines[n]);
+    const real = ["kokoro", "sapi", "openai", "espeak"].some((n) => state.engines.engines[n]);
     if (!real) {
         $("engineNote").textContent =
-            "No speech engine is installed on this server, so audio will be placeholder tones. " +
-            "Install kokoro or espeak-ng (see README) for real voices.";
+            "No speech engine is available on this server, so generating will fail until one is installed: " +
+            "espeak-ng or Kokoro (see README); Windows has built-in voices. The 'synthetic' option makes placeholder tones only, not speech.";
         show($("engineNote"), true);
     }
     if (!state.engines.builders.llm) {

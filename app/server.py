@@ -30,7 +30,7 @@ from app.config import ROOT, Settings, get_settings
 from app.db import Database
 from app.pdf_extract import PdfError, load_book
 from app.pipeline import PipelineOptions, run_pipeline, select_chapters
-from app.tts_engine import available_engines
+from app.tts_engine import NO_SPEECH_ENGINE_HELP, REAL_ENGINES, available_engines
 
 log = logging.getLogger(__name__)
 
@@ -210,7 +210,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         chapters: str = Form(default=""),
         owner: str = Depends(visitor),
     ):
-        if tts not in {"auto", "kokoro", "openai", "espeak", "synthetic"}:
+        if tts not in {"auto", "kokoro", "sapi", "openai", "espeak", "synthetic"}:
             raise HTTPException(422, "Unknown TTS engine")
         if builder not in {"auto", "heuristic", "llm"}:
             raise HTTPException(422, "Unknown script builder")
@@ -218,7 +218,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             raise HTTPException(422, "Format must be mp3, m4b or wav")
         if not -30.0 <= ambience_db <= -3.0:
             raise HTTPException(422, "Ambience level must be between -30 and -3 dB")
-        if tts != "auto" and not available_engines(settings).get(tts):
+        engines = available_engines(settings)
+        if tts == "auto" and not any(engines.get(n) for n in REAL_ENGINES):
+            raise HTTPException(422, NO_SPEECH_ENGINE_HELP)
+        if tts != "auto" and not engines.get(tts):
             raise HTTPException(422, f"The {tts} engine is not available on this server")
         if builder == "llm" and not settings.anthropic_api_key:
             raise HTTPException(422, "The LLM builder needs ANTHROPIC_API_KEY on the server")

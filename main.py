@@ -79,7 +79,7 @@ def main(argv: list[str] | None = None) -> int:
     b = sub.add_parser("build", help="generate an audiobook")
     common(b)
     b.add_argument("-o", "--output", default="output")
-    b.add_argument("--tts", choices=["auto", "kokoro", "openai", "espeak", "synthetic"], default="auto")
+    b.add_argument("--tts", choices=["auto", "kokoro", "sapi", "openai", "espeak", "synthetic"], default="auto")
     b.add_argument("--format", choices=["mp3", "m4b", "wav"], default="mp3")
     b.add_argument("--no-ambience", action="store_true")
     b.add_argument("--ambience-db", type=float, default=-12.0, help="ambience gain in dB (default -12)")

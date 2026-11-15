@@ -19,7 +19,8 @@ python -m venv .venv && source .venv/bin/activate
 pip install -r requirements.txt
 sudo apt install ffmpeg            # required for MP3/M4B export (brew install ffmpeg on macOS)
 
-# Real voices (pick one):
+# Real voices. Windows: nothing to install, the built-in voices (David, Zira...) are used automatically.
+# Elsewhere, or for better quality, pick one:
 pip install -r requirements-tts.txt && sudo apt install espeak-ng   # Kokoro: best free quality, CPU is fine
 #   or: sudo apt install espeak-ng                                 # robotic but zero-download
 #   or: export OPENAI_API_KEY=...                                  # cloud voices
@@ -28,8 +29,8 @@ python main.py build samples/rainy_inn.txt -o output/              # CLI
 python main.py serve                                               # web app on http://127.0.0.1:8000
 ```
 
-With no speech engine installed the app still runs end to end using a **placeholder tone engine**
-(clearly labelled in the UI) so you can try the mixing and ambience before installing voices.
+If no speech engine is available, generating fails with instructions to install one. The `synthetic` engine
+(choose it explicitly) makes **placeholder tones, not speech**, only for trying the mixing and ambience.
 
 ### CLI
 
@@ -53,7 +54,7 @@ deleted after 7 days by default. Interactive API docs live at `/api/docs`.
 |---|---|---|
 | Extract | `app/pdf_extract.py` | PyMuPDF text blocks → paragraphs; strips running headers and page numbers, repairs hyphenation, splits chapters by headings (falls back to the PDF outline). Scanned PDFs give a clear error (no OCR yet). |
 | Script | `app/script_builder.py` | Splits narration from quoted speech; attributes speakers from "said X", pronouns, role nouns ("said his lady") and back-and-forth alternation; infers gender and emotion; detects scenes and ambience from a lexicon with persistence ("night" lasts until "morning", "rain" until it stops). Optional **Claude** builder does it with an LLM, validates against the source text, and falls back to the rules per chunk if the answer is malformed or incomplete. |
-| Voices | `app/tts_engine.py` | One interface, four engines (Kokoro, OpenAI, espeak-ng, placeholder). Each character gets a stable voice from a gendered pool; results are cached on disk so reruns are free; transient failures are retried. |
+| Voices | `app/tts_engine.py` | One interface, five engines (Kokoro, Windows built-in voices, OpenAI, espeak-ng, placeholder). `auto` picks the best real one and **fails with install instructions rather than silently producing non-speech tones**. Each character gets a stable voice from a gendered pool; results are cached on disk so reruns are free; transient failures are retried. |
 | Ambience | `app/ambience.py` | 11 procedural soundscapes (rain, thunder, wind, night, fire, ocean, forest, river, city, crowd, birds). Noise is shaped in the frequency domain with whole-cycle modulation so every loop is seamless. Drop real recordings in `assets/ambience/` to override. |
 | Mix | `app/mixer.py` | Pauses between lines, ambience bed ducked ~7 dB under speech, crossfades between scenes, then ffmpeg loudness normalisation (-16 LUFS). |
 | Serve | `app/server.py`, `app/db.py` | FastAPI + SQLite. No accounts: an anonymous cookie scopes each browser's jobs, with parameterised SQL, per-visitor and global job limits, automatic cleanup, a background worker, and HTTP range requests so audio seeks. |
@@ -83,12 +84,13 @@ See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for design decisions and trade-
 
 Be aware of what is and isn't verified:
 
-- **Tested automatically (137 tests, on Python 3.11 and 3.13):** PDF extraction, the rule-based script builder (including a
+- **Tested automatically (145 tests, on Python 3.11 and 3.13):** PDF extraction, the rule-based script builder (including a
   real-prose regression), the LLM builder against a fake client (malformed output, dropped text,
   network errors), all ambience generators (seamless loops, levels), mixing/ducking, MP3/M4B export
   with chapter markers and loudness, the whole pipeline, and the web API (anonymous visitors, isolation, limits, retention, uploads, jobs).
   The web UI was also driven end to end in headless Chromium.
 - **Not built or run anywhere yet:** the `Dockerfile` (no Docker daemon was available when it was written).
+- **Windows built-in voices (`sapi`) are tested only against a fake PowerShell**, not on a real Windows machine.
 - **Not exercised in CI:** the Kokoro and espeak engines and the live Claude/OpenAI calls need
   models, binaries or API keys that CI does not have. They are written against those libraries' documented
   interfaces; run `python main.py build samples/rainy_inn.txt --tts kokoro` once to confirm on your machine.

@@ -98,11 +98,135 @@ def test_openai_engine_errors_are_ttserrors():
         OpenAIEngine(None)
 
 
-def test_get_engine_auto_always_returns_something(settings):
-    assert get_engine("auto", settings).name in {"kokoro", "espeak", "synthetic"}
-    with pytest.raises(TTSError):
-        get_engine("nope", settings)
+def test_auto_never_falls_back_to_the_non_speech_engine(settings, monkeypatch):
+    """Regression: with no speech engine installed, 'auto' used to silently make placeholder tones."""
+    import app.tts_engine as tts
+
+    def nothing(name, *a, **k):
+        raise tts.TTSError(f"{name} unavailable")
+
+    monkeypatch.setattr(tts, "KokoroEngine", lambda: nothing("kokoro"))
+    monkeypatch.setattr(tts, "SapiEngine", lambda: nothing("sapi"))
+    monkeypatch.setattr(tts, "EspeakEngine", lambda: nothing("espeak"))
+    with pytest.raises(TTSError, match="No speech engine is available"):
+        get_engine("auto", settings)
+    assert get_engine("synthetic", settings).name == "synthetic", "still available when asked for explicitly"
+
+
+def test_auto_prefers_kokoro_then_sapi_then_espeak(settings, monkeypatch):
+    import app.tts_engine as tts
+
+    class Fake(SyntheticEngine):
+        def __init__(self, label):
+            self.name = label
+
+    def unavailable():
+        raise tts.TTSError("no")
+
+    monkeypatch.setattr(tts, "KokoroEngine", unavailable)
+    monkeypatch.setattr(tts, "SapiEngine", lambda: Fake("sapi"))
+    monkeypatch.setattr(tts, "EspeakEngine", lambda: Fake("espeak"))
+    assert get_engine("auto", settings, cache=False).name == "sapi"
+    monkeypatch.setattr(tts, "SapiEngine", unavailable)
+    assert get_engine("auto", settings, cache=False).name == "espeak"
+
+
+def test_auto_can_use_openai_when_it_is_the_only_engine(settings, monkeypatch):
+    from dataclasses import replace
+
+    import app.tts_engine as tts
+
+    def unavailable():
+        raise tts.TTSError("no")
+
+    for n in ("KokoroEngine", "SapiEngine", "EspeakEngine"):
+        monkeypatch.setattr(tts, n, unavailable)
+    assert get_engine("auto", replace(settings, openai_api_key="sk-x"), cache=False).name == "openai"
+
+
+def test_available_engines_lists_synthetic(settings):
     assert available_engines(settings)["synthetic"] is True
+    assert "sapi" in available_engines(settings)
+
+
+# ---------------------------------------------------------------- Windows SAPI (fake PowerShell)
+
+
+class FakePowerShell:
+    """Stands in for powershell.exe: answers the voice-listing script and 'speaks' by writing a WAV."""
+
+    def __init__(self, voices_json: str, fail_speak: bool = False):
+        self.voices_json, self.fail_speak, self.spoken = voices_json, fail_speak, []
+
+    def __call__(self, cmd, **kwargs):
+        import base64
+        import subprocess
+
+        assert cmd[-2] == "-EncodedCommand"
+        script = base64.b64decode(cmd[-1]).decode("utf-16-le")
+        if "GetInstalledVoices" in script:
+            return subprocess.CompletedProcess(cmd, 0, stdout=self.voices_json.encode(), stderr=b"")
+        env = kwargs["env"]
+        self.spoken.append((env["SONICTALES_TEXT"], env["SONICTALES_VOICE"], env["SONICTALES_RATE"]))
+        if self.fail_speak:
+            return subprocess.CompletedProcess(cmd, 1, stdout=b"", stderr=b"voice not found")
+        tone = (0.2 * np.sin(2 * np.pi * 220 * np.arange(11025) / 22050)).astype(np.float32)
+        with open(env["SONICTALES_OUT"], "wb") as fh:
+            fh.write(wav_bytes(tone, 22050))
+        return subprocess.CompletedProcess(cmd, 0, stdout=b"", stderr=b"")
+
+
+WIN_VOICES = (
+    '[{"Name":"Microsoft David Desktop","Gender":"Male","Culture":"en-US"},'
+    '{"Name":"Microsoft Zira Desktop","Gender":"Female","Culture":"en-US"},'
+    '{"Name":"Microsoft Hazel Desktop","Gender":"Female","Culture":"en-GB"},'
+    '{"Name":"Microsoft Hedda Desktop","Gender":"Female","Culture":"de-DE"}]'
+)
+
+
+def test_sapi_discovers_voices_by_gender_and_language():
+    from app.tts_engine import SapiEngine
+
+    eng = SapiEngine(runner=FakePowerShell(WIN_VOICES))
+    assert eng.voices["male"] == ["Microsoft David Desktop"]
+    assert eng.voices["female"] == ["Microsoft Zira Desktop", "Microsoft Hazel Desktop"], "non-English voices skipped"
+    assert eng.voices["narrator"] == ["Microsoft David Desktop"]
+
+
+def test_sapi_single_voice_json_object_and_single_gender_fallback():
+    from app.tts_engine import SapiEngine
+
+    only_zira = '{"Name":"Microsoft Zira Desktop","Gender":"Female","Culture":"en-US"}'  # PowerShell: 1 item = object
+    eng = SapiEngine(runner=FakePowerShell(only_zira))
+    assert eng.voices["male"] == eng.voices["female"] == eng.voices["narrator"] == ["Microsoft Zira Desktop"]
+
+
+def test_sapi_synthesize_passes_text_safely_and_returns_audio():
+    from app.tts_engine import SapiEngine
+
+    fake = FakePowerShell(WIN_VOICES)
+    eng = SapiEngine(runner=fake)
+    awkward = 'He said "hello" & left; $(rm -rf) \u00e9\u4e2d'
+    audio = eng.synthesize(awkward, "Microsoft Zira Desktop", "sad")
+    assert audio.size == 11025 and np.abs(audio).max() > 0.1
+    text, voice, rate = fake.spoken[0]
+    assert text == awkward, "text is passed through the environment untouched, never interpolated into a script"
+    assert voice == "Microsoft Zira Desktop" and rate == "-2", "sad speaks slower (speed 0.9 -> rate -2)"
+
+
+def test_sapi_errors_become_ttserrors():
+    from app.tts_engine import SapiEngine
+
+    with pytest.raises(TTSError, match="Windows speech failed"):
+        SapiEngine(runner=FakePowerShell(WIN_VOICES, fail_speak=True)).synthesize("hi", "Microsoft David Desktop")
+    with pytest.raises(TTSError, match="no text-to-speech voices"):
+        SapiEngine(runner=FakePowerShell("[]"))
+    with pytest.raises(TTSError, match="only works on Windows"):
+        import sys
+
+        if sys.platform == "win32":
+            raise TTSError("only works on Windows")  # pragma: no cover - keeps this test meaningful on Windows CI
+        SapiEngine()
 
 
 def test_audio_io_roundtrip_and_resample():
